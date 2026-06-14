@@ -3,3 +3,5 @@
 __pycache__/
 .env
 .chroma/
+Query_Outputs/
+papers_seen.json

@@ -1,52 +1,74 @@
 """
 Memory module.
 Two things live here:
-  1. PaperCache    — file-based set of seen arxiv IDs (your original logic, cleaned up)
+  1. PaperCache    — file-based set of seen arxiv IDs
   2. SessionMemory — ChromaDB store for full research sessions (enables recall queries)
-
-ChromaDB runs fully locally, no API key needed. pip install chromadb.
 """
 
 import json
 from pathlib import Path
 from datetime import datetime
+from models.classes import Paper
 
 from models.classes import ResearchSession
 
 
 # ─────────────────────────────────────────────
-# 1. Paper dedup cache (flat file, fast)
+# 1. Paper dedup cache
 # ─────────────────────────────────────────────
 
-CACHE_FILE = Path("papers_seen.txt")
 
-
+ 
+CACHE_FILE = Path("papers_seen.json")
+ 
+ 
 class PaperCache:
     def __init__(self):
-        self._seen: set[str] = self._load()
-
-    def _load(self) -> set[str]:
+        self._data: dict[str, dict] = self._load()
+ 
+    def _load(self) -> dict:
         if CACHE_FILE.exists():
-            return set(CACHE_FILE.read_text().splitlines())
-        return set()
-
+            try:
+                return json.loads(CACHE_FILE.read_text())
+            except json.JSONDecodeError:
+                print("⚠️  papers_seen.json corrupted — starting fresh")
+                return {}
+        return {}
+ 
     def _save(self):
-        CACHE_FILE.write_text("\n".join(self._seen))
-
+        CACHE_FILE.write_text(json.dumps(self._data, indent=2))
+ 
     def seen(self, paper_id: str) -> bool:
-        return paper_id in self._seen
-
-    def mark_seen(self, paper_id: str):
-        self._seen.add(paper_id)
+        return paper_id in self._data
+ 
+    def mark_seen(self, paper_id: str, title: str = ""):
+        self._data[paper_id] = {
+            "title": title,
+            "added": datetime.now().isoformat(),
+        }
         self._save()
-
-    def mark_seen_bulk(self, paper_ids: list[str]):
-        self._seen.update(paper_ids)
+ 
+    def mark_seen_bulk(self, paper_ids: list[str], papers=None):
+        """
+        paper_ids: list of entry_id strings
+        papers:    optional list of Paper objects (to store titles)
+        """
+        title_map = {}
+        if papers:
+            title_map = {p.link: p.title for p in papers}
+ 
+        for pid in paper_ids:
+            if pid not in self._data:
+                self._data[pid] = {
+                    "title": title_map.get(pid, ""),
+                    "added": datetime.now().isoformat(),
+                }
         self._save()
-
+ 
     @property
-    def ids(self) -> set[str]:
-        return self._seen
+    def ids(self) -> set:
+        return set(self._data.keys())
+ 
 
 
 # ─────────────────────────────────────────────

@@ -6,7 +6,7 @@ from models.classes import Paper
 from models.llm import chat
 
 SYSTEM = (
-    "You are a senior  technica; research analyst"
+    "You are a senior technical research analyst"
      "Write clearly and precisely. No filler. No hype."
 )
 
@@ -65,8 +65,8 @@ def save_report(query: str, report: str, papers: List[Paper]) -> Path:
     """Write markdown report to disk. Same format as your original."""
     date_str = datetime.now().strftime("%Y%m%d_%H%M")
     slug = query[:30].replace(" ", "_").replace("/", "-")
-    filename = Path(f"research_digest_{date_str}_{slug}.md")
- 
+    filename = Path(f"Query_Outputs/research_digest_{date_str}_{slug}.md")
+    filename.parent.mkdir(parents=True, exist_ok=True)
     with filename.open("w") as f:
         f.write(f"# Research Digest\n")
         f.write(f"**Query:** {query}\n")

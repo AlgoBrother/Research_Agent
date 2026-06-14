@@ -11,21 +11,16 @@ from models.llm import chat
 
 SYSTEM_PROMPT = "You classify research queries. Respond with exactly one word." # we want a single word response to make it easy to parse
 PROMPT_TEMPLATE = """Classify this query. Output exactly one word: PROJECT or STANDALONE.
- 
-PROJECT = references an ongoing codebase, project state, architecture, or prior session.
-Examples:
-  - "how do I improve Maya's attention mechanism?"
-  - "what did we learn about tokenizer fertility last time?"
-  - "should I use GQA or MHA in my current model?"
- 
-STANDALONE = self-contained general knowledge, no project dependency.
-Examples:
-  - "how does FlashAttention work?"
-  - "what is symbolic algebra?"
-  - "explain the difference between GQA and MHA"
- 
+
+PROJECT = explicitly references the user's OWN ongoing system by name.
+Examples: "improve MY tokenizer", "my current model", "our training pipeline"
+
+STANDALONE = general ML/CS knowledge question, even if the topic overlaps with the user's work.
+Examples: "how does FlashAttention work?" → STANDALONE (asking about a paper/algorithm)
+          "should I use FlashAttention in MY model?" → PROJECT (references their system)
+
 Query: {query}
- 
+
 One word only:"""
 
 def classify_intent(query: str) -> QueryIntent:

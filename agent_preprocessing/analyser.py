@@ -1,57 +1,87 @@
+"""
+Query analyzer
+
+Generate terms the way arXiv actually tokenizes them.
+"""
+
+from typing import List
 from models.classes import Source
 from models.llm import chat_json
-from typing import List
 
 SYSTEM = "You are a research query analyzer. Always respond with valid JSON only. No preamble."
 
-PROMPT_TEMPLATE = """Analyze this research query and output a JSON routing plan.
+PROMPT_TEMPLATE = """Analyze this research query and return a JSON routing plan.
 
 Query: {query}
+Project context: {context}
 
-Project context (may be empty):
-{context}
-
-Output this exact JSON structure:
+Return this exact JSON:
 {{
-  "topic": "one-sentence description of what this is about",
+  "topic": "one-sentence description",
   "search_terms": ["term1", "term2", "term3", "term4"],
-  "sources": ["arxiv", "github", "web"],
+  "sources": ["arxiv"],
   "freshness": "high|medium|low",
   "recall_mode": false
 }}
 
-Rules for sources (ordered by priority for this query):
-- "arxiv"  → ML papers, algorithms, architectures, benchmarks, theory
-- "github" → implementation, code, libraries, CLI tools, repos
-- "web"    → news, blog posts, release announcements, how-to guides
+--- SEARCH TERMS (CRITICAL RULES) ---
+arXiv uses Lucene. Field-scoped terms (ti:, abs:) BREAK on spaces:
+  abs:flash attention  →  Lucene sees: abs:flash AND attention
+  →  "attention" without scope matches EVERY attention paper
+  →  result: 10,000 irrelevant papers
 
-Rules for freshness:
-- "high"   → user needs info from the last 7 days (breaking news, latest releases)
-- "medium" → last 30 days is fine
-- "low"    → timeless: classic papers, algorithms, fundamentals
+RULE: search_terms must be ONE of:
+  a) A single CamelCase token:   "FlashAttention", "GQA", "RoPE", "SwiGLU"
+  b) A hyphenated token:         "IO-aware", "context-length", "multi-head"
+  c) A short 2-word phrase (OK in all: field): "flash attention", "ring attention"
 
-Set recall_mode=true ONLY if the query is asking about what was learned in a prior session
-(e.g. "what did we find last time?", "what did we learn about X?").
+Generate 3-4 terms. Examples by query type:
 
-Respond with JSON only:"""
+"how does FlashAttention work?"
+→ ["FlashAttention", "IO-aware", "tiling", "flash attention"]
+
+"explain speculative decoding"
+→ ["speculative decoding", "draft model", "token speculation", "parallel decoding"]
+
+"improve tokenizer efficiency"
+→ ["BPE", "tokenizer", "subword", "vocabulary"]
+
+"what is GQA?"
+→ ["GQA", "grouped-query attention", "multi-query attention", "KV cache"]
+
+--- SOURCES ---
+"arxiv"  → ML papers, algorithms, architecture, theory
+"github" → code, repos, implementations
+"web"    → news, releases, blogs
+
+--- FRESHNESS ---
+"low"    → "how does X work?", "explain X", "what is X?", classic algorithms
+"medium" → "recent work on X", "latest papers on X"
+"high"   → "today", "this week", "latest release"
+
+Default to "low" for any explanatory or architectural question.
+
+--- RECALL MODE ---
+recall_mode=true ONLY for: "what did we find last time?", "what did we learn about X?"
+
+JSON only:"""
 
 
 class QueryPlan:
     def __init__(self, data: dict):
-        self.topic: str = data.get("topic", "")
+        self.topic: str             = data.get("topic", "")
         self.search_terms: List[str] = data.get("search_terms", [])
-        self.sources: List[Source] = [
+        self.sources: List[Source]  = [
             Source(s) for s in data.get("sources", ["arxiv"])
             if s in [src.value for src in Source]
         ]
-        self.freshness: str = data.get("freshness", "medium")
+        self.freshness: str   = data.get("freshness", "low")
         self.recall_mode: bool = data.get("recall_mode", False)
 
     def __repr__(self):
         return (
             f"QueryPlan(topic={self.topic!r}, "
             f"terms={self.search_terms}, "
-            f"sources={[s.value for s in self.sources]}, "
             f"freshness={self.freshness})"
         )
 

@@ -96,25 +96,22 @@ class ResearchAgent:
             paper_ids=[p.arxiv_id for p in top_ranked_papers],
         )
         self.session_memory.save(session)
-        self.cache.mark_seen_bulk([p.link for p in top_ranked_papers])
+        self.cache.mark_seen_bulk(
+            paper_ids=[p.link for p in top_ranked_papers],
+            papers=top_ranked_papers
+        )
 
         # Save report to disk
         save_report(query=query, report=report, papers=top_ranked_papers)
         log("\nReport generated and saved.\n")
         log("\n" + "="*50 + "\n")
-
+        return report
 
 if __name__ == "__main__":
-    # Quick smoke test
     agent = ResearchAgent(top_k=6)
- 
-    # Test 1: standalone query
-    agent.run("how does FlashAttention reduce memory usage in transformers?")
- 
-
-
-
-
-            
-        
+    report = agent.run(
+        "Explain Weight Sharing Regularization",
+        verbose=True   # ← see what's happening
+    )
+    print(report)      # ← see the actual output
 
