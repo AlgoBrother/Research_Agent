@@ -1,0 +1,14 @@
+arxiv
+openai
+pydantic
+python-dotenv
+markdown
+langchain
+langchain-community
+langchain-groq
+langchain-google-genai
+python-dotenv
+langchain_tavily
+langchain-mcp-adapters
+mcp
+tqdm
