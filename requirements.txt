@@ -12,3 +12,5 @@ langchain_tavily
 langchain-mcp-adapters
 mcp
 tqdm
+streamlit                  
+pypdf         

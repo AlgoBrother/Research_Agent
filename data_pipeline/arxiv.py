@@ -1,7 +1,19 @@
+"""
+arxiv.py v7 — adds adaptive freshness retry.
+
+When a query implies "new/recent" but the narrow date window returns
+nothing, automatically widen the search instead of giving up.
+
+7 days → 30 days → 180 days → all-time (no cutoff)
+"""
+
 import arxiv
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from models.classes import Paper
+
+# Escalation ladder for adaptive retry — used only when freshness="high" or "medium"
+FRESHNESS_LADDER = [7, 30, 180, None]  # None = no cutoff, search all time
 
 FRESHNESS_DAYS: dict[str, Optional[int]] = {
     "high":   7,
@@ -11,100 +23,114 @@ FRESHNESS_DAYS: dict[str, Optional[int]] = {
 
 
 def _build_query(search_terms: List[str]) -> str:
-    """
-    Build a valid arXiv Lucene query. 
-    Fetch papers from arXiv matching any of the search terms.
-    Filters by date and deduplicates against seen_ids.
-
-    THE CORE RULE — arXiv Lucene field scoping breaks on spaces:
-      abs:flash attention  →  parses as  abs:flash AND attention
-                           →  'attention' without field scope matches ALL attention papers
-                           →  you get thousands of false positives
-
-    So multi-word terms MUST use the all: field (full-text, no field parse ambiguity)
-    or be hyphenated/camelCase single tokens.
-
-    Strategy:
-      - Single-token terms  → ti: (highest signal) + abs: (wider net)
-      - Multi-word terms    → all: (safe fallback — full text search, no parse ambiguity)
-      - Max 4 terms total to keep URL length reasonable
-    """
+    if not search_terms:
+        raise ValueError("search_terms is empty")
     terms = list(dict.fromkeys(search_terms))[:4]
-
-    if not terms:
-        raise ValueError("search_terms is empty — analyzer returned no terms")
-
-    single_token = [t for t in terms if " " not in t]
-    multi_word   = [t for t in terms if " " in t]
-
-    clauses = []
-
-    # Single-token terms: field-scoped (precise)
-    for t in single_token:
-        clauses.append(f"ti:{t} OR abs:{t}")
-
-    # Multi-word terms: all: field (safe — no Lucene parse ambiguity)
-    for t in multi_word:
-        clauses.append(f'all:"{t}"')  # quotes inside all: are safe, only abs:/ti: breaks
-
-    return " OR ".join(f"({c})" for c in clauses)
+    wrapped = [f'"{t}"' if " " in t else t for t in terms]
+    return " OR ".join(wrapped)
 
 
-def fetch_papers(
-    search_terms: List[str],
-    freshness: str = "medium",
-    max_results: int = 20,
-    seen_ids: set | None = None,
-) -> List[Paper]:
-    seen_ids = seen_ids or set()
-    lookback_days = FRESHNESS_DAYS.get(freshness)
-    cutoff: Optional[datetime] = None
-    if lookback_days is not None:
-        cutoff = datetime.now(tz=timezone.utc) - timedelta(days=lookback_days)
-
-    query = _build_query(search_terms)
-
-    arxiv_client = arxiv.Client(
-        page_size=max_results,
-        delay_seconds=1.0,
-        num_retries=3,
+def _result_to_paper(result) -> Paper:
+    pub = result.published
+    if pub.tzinfo is None:
+        pub = pub.replace(tzinfo=timezone.utc)
+    return Paper(
+        title=result.title,
+        authors=[a.name for a in result.authors],
+        summary=result.summary,
+        published=pub,
+        pdf_url=str(result.pdf_url),
+        arxiv_id=result.entry_id.split("/")[-1],
+        link=result.entry_id,
     )
+
+
+def fetch_by_ids(arxiv_ids: List[str]) -> List[Paper]:
+    if not arxiv_ids:
+        return []
+    client = arxiv.Client(delay_seconds=1.0, num_retries=3)
+    search = arxiv.Search(id_list=arxiv_ids)
+    papers = []
+    try:
+        for result in client.results(search):
+            papers.append(_result_to_paper(result))
+    except arxiv.HTTPError as e:
+        print(f"⚠️  arXiv ID fetch error ({e.status}): {e}")
+    return papers
+
+
+def _fetch_with_cutoff(
+    query: str,
+    cutoff: Optional[datetime],
+    max_results: int,
+    seen_ids: set,
+    client: arxiv.Client,
+) -> List[Paper]:
     search = arxiv.Search(
         query=query,
         max_results=max_results,
         sort_by=arxiv.SortCriterion.Relevance,
     )
-
-    papers: List[Paper] = []
-    try:
-        for result in arxiv_client.results(search):
-            pub = result.published
-            if pub.tzinfo is None:
-                pub = pub.replace(tzinfo=timezone.utc)
-
-            entry_id = result.entry_id
-
-            if cutoff is not None and pub < cutoff:
-                continue
-            if entry_id in seen_ids:
-                continue
-
-            papers.append(Paper(
-                title=result.title,
-                authors=[a.name for a in result.authors],
-                summary=result.summary,
-                published=pub,
-                pdf_url=str(result.pdf_url),
-                arxiv_id=entry_id.split("/")[-1],
-                link=entry_id,
-            ))
-
-    except arxiv.HTTPError as e:
-        print(f"⚠️  arXiv HTTP error ({e.status}): {e}")
-        print(f"   Query was: {query}")
-        return []
-    except Exception as e:
-        print(f"⚠️  arXiv fetch error: {e}")
-        return []
-
+    papers = []
+    for result in client.results(search):
+        pub = result.published
+        if pub.tzinfo is None:
+            pub = pub.replace(tzinfo=timezone.utc)
+        if cutoff is not None and pub < cutoff:
+            continue
+        if result.entry_id in seen_ids:
+            continue
+        papers.append(_result_to_paper(result))
     return papers
+
+
+def fetch_papers(
+    search_terms: List[str],
+    freshness: str = "low",
+    max_results: int = 20,
+    seen_ids: set | None = None,
+    adaptive: bool = True,
+) -> List[Paper]:
+    """
+    Fetch papers, with adaptive freshness widening.
+
+    If freshness="high" or "medium" returns 0 results, automatically
+    retry with progressively wider date windows (30d → 180d → all-time)
+    instead of giving up. This matches "find me something new, but if
+    nothing is genuinely new, give me the best available answer."
+
+    freshness="low" never had a cutoff to begin with, so adaptive
+    retry doesn't apply (already searching all time).
+    """
+    seen_ids = seen_ids or set()
+    query = _build_query(search_terms)
+    print(f"   arXiv query: {query!r}")
+
+    client = arxiv.Client(page_size=max_results, delay_seconds=1.0, num_retries=3)
+
+    if freshness == "low" or not adaptive:
+        lookback = FRESHNESS_DAYS.get(freshness)
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(days=lookback) if lookback else None
+        try:
+            return _fetch_with_cutoff(query, cutoff, max_results, seen_ids, client)
+        except Exception as e:
+            print(f"⚠️  arXiv fetch error: {e}")
+            return []
+
+    # Adaptive: start at the requested freshness, widen if empty
+    start_idx = 0 if freshness == "high" else 1  # medium starts at 30d rung
+    for days in FRESHNESS_LADDER[start_idx:]:
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(days=days) if days else None
+        label = f"{days}d" if days else "all-time"
+        try:
+            papers = _fetch_with_cutoff(query, cutoff, max_results, seen_ids, client)
+        except Exception as e:
+            print(f"⚠️  arXiv fetch error at {label}: {e}")
+            continue
+
+        if papers:
+            print(f"   found {len(papers)} paper(s) at window={label}")
+            return papers
+        print(f"   0 papers at window={label} — widening...")
+
+    return []
