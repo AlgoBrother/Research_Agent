@@ -1,8 +1,8 @@
 from groq import Groq
 import os
 import json
-_client : Groq | None = None # Lazy initialization to avoid loading the model multiple times during development
-
+from openai import OpenAI
+_client : OpenAI | None = None # Lazy initialization to avoid loading the model multiple times during development
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
@@ -12,7 +12,10 @@ def get_client():
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
             raise EnvironmentError("GROQ_API_KEY not set in .env")
-        _client =Groq(api_key=api_key) # Initialize the client with the API key
+        _client =OpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=api_key
+        ) # Initialize the client with the API key
     return _client
 
 def chat(prompt : str, system: str = "You are a helpful research assistant.", model: str = "llama-3.1-8b-instant", temperature: float = 0.2, max_tokens: int = 1024) -> str:
