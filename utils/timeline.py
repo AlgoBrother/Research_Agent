@@ -1,6 +1,5 @@
 import time
 from contextlib import contextmanager
-
 @contextmanager 
 def timed_stage(label: str, latency_log: dict):
     start = time.perf_counter()

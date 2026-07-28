@@ -5,3 +5,4 @@ __pycache__/
 .chroma/
 Query_Outputs/
 papers_seen.json
+tests/

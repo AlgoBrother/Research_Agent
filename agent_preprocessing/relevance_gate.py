@@ -14,12 +14,12 @@ Two gates that sit between retrieval and answer generation:
 
 import re
 from typing import List
-from models.classes import Paper
+from models.classes import Paper, PooledChunk, Source
 
 
 # Common greetings / chitchat that should never trigger research pipeline
 _CHITCHAT_PATTERNS = re.compile(
-    r"^\s*(hi|hello|hey|yo|sup|good morning|good afternoon|good evening|"
+    r"^\s*(hi|hello|hey|yo|sup|good morning|good afternoon|good evening|wassup|greetings|howdy|what's new|what's going on|"
     r"how are you|what's up|thanks|thank you|ok|okay|cool|nice|great|"
     r"bye|goodbye|see ya)\s*[!.?]*\s*$",
     re.IGNORECASE,
@@ -51,20 +51,38 @@ _STOP_FOR_RELEVANCE = {
 }
 
 
-def papers_are_relevant(query: str, search_terms: List[str], papers: List[Paper],
-                         min_overlap_ratio: float = 0.15) -> bool:
+# Web content is noisier than arXiv/PWC, so it needs a higher overlap
+# bar before we trust it enters the pooled context at all.
+SOURCE_RELEVANCE_THRESHOLD = {
+    Source.ARXIV: 0.15,
+    Source.PAPERSWITHCODE: 0.12,
+    Source.GITHUB: 0.12,
+    Source.WEB: 0.20,
+}
+
+
+def _extract_text(item) -> str:
+    """Works across Paper (.summary) and PooledChunk (.text)."""
+    title = getattr(item, "title", "")
+    body = getattr(item, "summary", None)
+    if body is None:
+        body = getattr(item, "text", "")
+    return f"{title} {body}"
+
+
+def items_are_relevant(query: str, search_terms: List[str], items: List,
+                        min_overlap_ratio: float = 0.15) -> bool:
     """
-    Check whether retrieved papers actually relate to the query.
+    Generalized relevance check — works over Paper OR PooledChunk objects,
+    so the same gate can run per-source (arxiv/pwc/web) before pooling,
+    not just once at the end over arxiv results.
 
     Heuristic: build a vocabulary from the query + search_terms, then
-    check what fraction of THAT vocabulary appears across the papers'
-    titles+abstracts combined. If overlap is too low, the retrieval
-    likely matched on noise (e.g. arXiv returning broad/unrelated
-    results for a vague or non-research query).
-
-    Returns True if papers pass the relevance bar, False otherwise.
+    check what fraction of THAT vocabulary appears across the items'
+    title+body combined. If overlap is too low, the retrieval likely
+    matched on noise. Returns True if items pass the relevance bar.
     """
-    if not papers:
+    if not items:
         return False
 
     query_vocab = _tokenize(query) | _tokenize(" ".join(search_terms))
@@ -74,10 +92,28 @@ def papers_are_relevant(query: str, search_terms: List[str], papers: List[Paper]
     if not query_vocab:
         return False
 
-    paper_text = " ".join(f"{p.title} {p.summary}" for p in papers)
-    paper_vocab = _tokenize(paper_text)
+    combined_text = " ".join(_extract_text(item) for item in items)
+    item_vocab = _tokenize(combined_text)
 
-    overlap = query_vocab & paper_vocab
+    overlap = query_vocab & item_vocab
     ratio = len(overlap) / len(query_vocab)
 
     return ratio >= min_overlap_ratio
+
+
+def source_is_relevant(query: str, search_terms: List[str], chunks: List[PooledChunk]) -> bool:
+    """
+    Same check as items_are_relevant(), but picks the threshold based on
+    the chunks' source (they should all share one source when called
+    per-agent). Falls back to 0.15 if the list is empty or mixed.
+    """
+    if not chunks:
+        return False
+    threshold = SOURCE_RELEVANCE_THRESHOLD.get(chunks[0].source, 0.15)
+    return items_are_relevant(query, search_terms, chunks, min_overlap_ratio=threshold)
+
+
+def papers_are_relevant(query: str, search_terms: List[str], papers: List[Paper],
+                         min_overlap_ratio: float = 0.15) -> bool:
+    """Kept for backward compatibility — existing call sites still work unchanged."""
+    return items_are_relevant(query, search_terms, papers, min_overlap_ratio)

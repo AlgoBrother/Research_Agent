@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import List, Optional
 from enum import Enum
+from pydantic import Field
 
 
 class QueryIntent(str, Enum):
@@ -47,12 +48,14 @@ class Paper(BaseModel):
 
 
 class RouterDecision(BaseModel):
-    """Output of classify_sources() — which agents to activate, and why."""
-    needs_arxiv: bool = True
-    needs_web: bool = False
-    needs_pwc: bool = False
-    sub_questions: List[str] = []
-    reason: str = ""
+    needs_arxiv: bool = Field(description="True for research papers, ML architectures, academic concepts.")
+    needs_pwc: bool = Field(description="True if official code, benchmarks, or paper implementations are needed.")
+    needs_web: bool = Field(description="True for recent news, general web context, or non-academic queries.")
+    sub_questions: List[str] = Field(
+        default_factory=list, 
+        description="1-3 targeted sub-questions if the query is multi-hop or complex."
+    )
+    reasoning: str = Field(description="Brief explanation of why these tiers were selected.")
 
 
 class PooledChunk(BaseModel):

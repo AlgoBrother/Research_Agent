@@ -5,7 +5,7 @@ from models.classes import QueryIntent, Source, ResearchSession
 from agent_preprocessing.intent_classifier import classify_intent
 from agent_preprocessing.analyser          import analyze_query, QueryPlan
 from agent_preprocessing.ranker            import rank_papers
-from agent_preprocessing.answer_generator  import generate_answer, generate_concept_answer
+from agent_preprocessing.answer_generator  import generate_answer, generate_concept_answer, extract_targeted_sections
 from agent_preprocessing.relevance_gate    import is_research_query, papers_are_relevant
 from data_pipeline.arxiv                   import fetch_papers, fetch_by_ids
 from data_pipeline.database                import PaperCache, SessionMemory
@@ -44,6 +44,32 @@ def _is_ambiguous_followup(query: str, last_papers: list) -> bool:
     if not AMBIGUOUS_REFERENT.match(query.strip()):
         return False
     return len(last_papers) != 1
+
+
+def _compile_toon_context(papers: list, query: str, search_terms: list) -> str:
+    """
+    Compiles retrieved papers into TOON (Token-Oriented Object Notation) format
+    for token-dense LLM context windows.
+    """
+    if not papers:
+        return ""
+
+    rows = []
+    for idx, paper in enumerate(papers):
+        source = "ARXIV"
+        source_id = paper.arxiv_id or f"arxiv:{idx}"
+        trust_tag = "ARXIV_SOURCE"
+        score = f"{getattr(paper, 'score', 0.90):.2f}"
+        
+        # Sanitize fields for TOON row representation
+        title = paper.title.replace(",", ";").replace("\n", " ")
+        section = "Abstract"
+        text = paper.summary.replace("\n", " ").replace(",", ";")
+
+        rows.append(f"{source},{source_id},{trust_tag},{score},{title},{section},{text}")
+
+    header = f"context_chunks[{len(rows)}]{{source,source_id,trust_tag,score,title,section,text}}:"
+    return header + "\n" + "\n".join(rows)
 
 
 class ResearchAgent:
@@ -112,8 +138,11 @@ class ResearchAgent:
         top_papers = papers if (plan.mode == "known_paper" and len(papers) <= self.top_k) \
             else rank_papers(papers, rank_terms, top_k=self.top_k)
 
+        step("Compiling TOON context...")
+        toon_context = _compile_toon_context(top_papers, query, plan.search_terms)
+
         step("Reading papers + writing answer...")
-        answer = generate_answer(query, top_papers, search_terms=plan.search_terms)
+        answer = generate_answer(query, toon_context)
 
         self._save(query, intent, plan, top_papers, answer)
         self.history.append({"role": "agent", "content": answer[:300]})
