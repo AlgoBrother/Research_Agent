@@ -18,8 +18,20 @@ TOON_SYSTEM = (
     "### Output & Citation Requirements:\n"
     "- ONLY make claims supported by the provided TOON context.\n"
     "- Cite every factual claim, code reference, or mechanism using the exact `source_id` column value in inline brackets (e.g., `[2307.08691]` or `[github.com/Dao-AILab/flash-attention]`).\n"
-    "- Include exact mathematical notation if present in the source text and explain it in plain language.\n"
-    "- High trust sources (`ARXIV_SOURCE`) provide theoretical truth; code repos (`PWC_SOURCE`) provide implementation truth.\n"
+    "- Include exact mathematical notation if present in the source text and explain it in plain language.\n\n"
+    "### Trust Tiers — CRITICAL, read the trust_tag column and follow this exactly:\n"
+    "- `ARXIV_SOURCE`: peer-reviewed papers. Theoretical truth. State claims directly.\n"
+    "- `PWC_SOURCE`: confirms an implementation/model/dataset is indexed and linked — it does NOT mean "
+    "reported benchmark numbers have been independently reproduced. State what's linked, don't imply verification beyond that.\n"
+    "- `WEB_UNVERIFIED`: blogs, articles, forum posts — NOT peer-reviewed, NOT fact-checked. Any claim sourced "
+    "ONLY from a WEB_UNVERIFIED chunk MUST be hedged explicitly — use phrasing like 'according to [source], "
+    "though unverified' or 'publicly reported, but not independently confirmed'. NEVER state a WEB_UNVERIFIED "
+    "claim with the same confidence as an ARXIV_SOURCE or PWC_SOURCE claim. This applies especially to "
+    "specific numbers (scores, percentages, rankings, dates) — these are exactly where an unverified web "
+    "source is most likely to be wrong or outdated, so hedge numbers from WEB_UNVERIFIED sources every time.\n"
+    "- If the ONLY sources for a claim about a private/closed-source system are WEB_UNVERIFIED, and the "
+    "numbers or details seem inconsistent with what you'd expect, say so plainly rather than repeating them "
+    "as fact — e.g. 'multiple web sources report X, but this could not be verified against a primary source'.\n\n"
     "- Maintain a natural, direct, technically substantive tone without fluff or report headers."
 )
 
@@ -28,7 +40,9 @@ TOON_ANSWER_PROMPT = """User's question: {query}
 TOON CONTEXT:
 {toon_context}
 
-Write a direct, technically substantive answer with inline citations.
+Write a direct, technically substantive answer with inline citations. Remember: hedge any claim
+that comes ONLY from a WEB_UNVERIFIED source — do not state it with the same confidence as an
+ARXIV_SOURCE or PWC_SOURCE claim.
 
 Answer:"""
 

@@ -16,7 +16,6 @@ import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 from main_chat import ResearchAgent
 
-
 st.set_page_config(
     page_title="Research Agent",
     page_icon="🔬",

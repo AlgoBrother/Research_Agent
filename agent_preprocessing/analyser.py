@@ -50,6 +50,7 @@ NEVER use noise words as terms: "paper", "research", "study", "method".
 
 ━━━ SOURCES ━━━
 "arxiv" → papers/theory  |  "github" → code  |  "web" → news
+DO NOT output any <think> tags or chain-of-thought prose. Respond ONLY with valid JSON matching the exact schema.
 
 JSON only:"""
 
@@ -110,8 +111,27 @@ class QueryPlan:
             return f"QueryPlan(mode=known_paper, ids={self.arxiv_ids}, fallback={self.search_terms})"
         return f"QueryPlan(mode={self.mode}, terms={self.search_terms}, freshness={self.freshness})"
 
+# Matches 4 digits, dot, 4-5 digits, optional version tag (e.g., 2307.08691, 2401.04088v2) for arXiv IDs in queries. Case-insensitive.
+ARXIV_ID_REGEX = re.compile(r"\b(\d{4}\.\d{4,5}(?:v\d+)?)\b", re.IGNORECASE)
 
 def analyze_query(query: str, context: str = "") -> QueryPlan:
+    # --- DETERMINISTIC PRE-CHECK FOR ARXIV IDS ---
+    found_ids = ARXIV_ID_REGEX.findall(query)
+    if found_ids:
+        return QueryPlan(
+            {
+                "mode": "known_paper",
+                "topic": f"Direct paper lookup for {', '.join(found_ids)}",
+                "arxiv_ids": found_ids,
+                "search_terms": found_ids,
+                "sources": ["arxiv"],
+                "freshness": "low",
+                "recall_mode": False,
+            },
+            original_query=query,
+        )
+
+    # Standard LLM classification path
     data = chat_json(
         PROMPT_TEMPLATE.format(query=query, context=context or "(none)"),
         system=SYSTEM,

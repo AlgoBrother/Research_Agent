@@ -19,7 +19,7 @@ from models.classes import Paper, PooledChunk, Source
 
 # Common greetings / chitchat that should never trigger research pipeline
 _CHITCHAT_PATTERNS = re.compile(
-    r"^\s*(hi|hello|hey|yo|sup|good morning|good afternoon|good evening|wassup|greetings|howdy|what's new|what's going on|"
+    r"^\s*(hi|hello|hey|yo|sup|good morning|good afternoon|good evening|"
     r"how are you|what's up|thanks|thank you|ok|okay|cool|nice|great|"
     r"bye|goodbye|see ya)\s*[!.?]*\s*$",
     re.IGNORECASE,
@@ -70,6 +70,41 @@ def _extract_text(item) -> str:
     return f"{title} {body}"
 
 
+def _norm_for_anchor(s: str) -> str:
+    """Strips everything but alphanumerics so hyphen/space variance
+    (SWE-bench vs SWE bench vs SWEbench) doesn't cause false negatives."""
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _anchor_present(anchor_term: str, combined_text: str) -> bool:
+    """
+    Checks whether the query's designated literal subject (search_terms[0],
+    which analyze_query() already guarantees is "the actual named thing
+    being asked about") genuinely appears in the retrieved text.
+
+    This exists because word-overlap alone lets off-topic papers through
+    when they share generic ML vocabulary with the query (e.g. a context-
+    pruning paper passing a "SWE-bench" query because both mention
+    "model"/"coding"/"benchmark") — the anchor is never actually present,
+    but the overlap ratio still clears the bar.
+
+    Only enforced for SHORT anchors (<=3 words). A longer anchor is
+    almost always a sign term extraction produced a broken clause rather
+    than a real subject (e.g. "Claude s differ from" instead of "Claude")
+    — requiring that exact multi-word fragment to appear verbatim would
+    reject genuinely relevant results, since it will never literally
+    appear anywhere. In that case, skip this gate and rely on the
+    overlap-ratio check alone, same as before this gate existed.
+    """
+    if not anchor_term:
+        return True
+    if len(anchor_term.split()) > 3:
+        return True  # anchor too noisy to trust — don't block on it
+    if len(anchor_term) <= 3:
+        return True  # too short/generic to check reliably either
+    return _norm_for_anchor(anchor_term) in _norm_for_anchor(combined_text)
+
+
 def items_are_relevant(query: str, search_terms: List[str], items: List,
                         min_overlap_ratio: float = 0.15) -> bool:
     """
@@ -77,10 +112,13 @@ def items_are_relevant(query: str, search_terms: List[str], items: List,
     so the same gate can run per-source (arxiv/pwc/web) before pooling,
     not just once at the end over arxiv results.
 
-    Heuristic: build a vocabulary from the query + search_terms, then
-    check what fraction of THAT vocabulary appears across the items'
-    title+body combined. If overlap is too low, the retrieval likely
-    matched on noise. Returns True if items pass the relevance bar.
+    Two gates, both must pass:
+    1. Vocabulary overlap — the existing heuristic.
+    2. Anchor presence — the query's literal subject (search_terms[0])
+       must actually appear in the text, not just generic shared
+       vocabulary. This catches the recurring failure where an
+       off-topic paper passes #1 on words like "model"/"benchmark"
+       alone (see: SWE-Pruner Pro passing a SWE-bench query).
     """
     if not items:
         return False
@@ -98,7 +136,11 @@ def items_are_relevant(query: str, search_terms: List[str], items: List,
     overlap = query_vocab & item_vocab
     ratio = len(overlap) / len(query_vocab)
 
-    return ratio >= min_overlap_ratio
+    if ratio < min_overlap_ratio:
+        return False
+
+    anchor = search_terms[0] if search_terms else ""
+    return _anchor_present(anchor, combined_text)
 
 
 def source_is_relevant(query: str, search_terms: List[str], chunks: List[PooledChunk]) -> bool:

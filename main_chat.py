@@ -1,16 +1,21 @@
 import sys, os, re
 sys.path.insert(0, os.path.dirname(__file__))
 
-from models.classes import QueryIntent, Source, ResearchSession
+from models.classes import QueryIntent, Source, ResearchSession, PooledChunk
 from agent_preprocessing.intent_classifier import classify_intent
 from agent_preprocessing.analyser          import analyze_query, QueryPlan
 from agent_preprocessing.ranker            import rank_papers
 from agent_preprocessing.answer_generator  import generate_answer, generate_concept_answer, extract_targeted_sections
-from agent_preprocessing.relevance_gate    import is_research_query, papers_are_relevant
+from agent_preprocessing.relevance_gate    import is_research_query, papers_are_relevant, source_is_relevant
 from data_pipeline.arxiv                   import fetch_papers, fetch_by_ids
+from data_pipeline.paperswithcode          import fetch_by_arxiv_ids
+from data_pipeline.websearch             import fetch_web_results
+from data_pipeline.mappers                 import map_to_pooled_chunks
+from data_pipeline.context_pool            import pool_chunks
+from data_pipeline.toon_compiler           import ToonCompiler
 from data_pipeline.database                import PaperCache, SessionMemory
-from models.llm                            import chat
-
+from models.llm                            import chat, get_router
+from utils.timeline                        import timed_stage
 
 FOLLOWUP_SIGNALS = re.compile(
     r"\b(that|it|this|those|these|compare|versus|vs\.?|"
@@ -46,37 +51,13 @@ def _is_ambiguous_followup(query: str, last_papers: list) -> bool:
     return len(last_papers) != 1
 
 
-def _compile_toon_context(papers: list, query: str, search_terms: list) -> str:
-    """
-    Compiles retrieved papers into TOON (Token-Oriented Object Notation) format
-    for token-dense LLM context windows.
-    """
-    if not papers:
-        return ""
-
-    rows = []
-    for idx, paper in enumerate(papers):
-        source = "ARXIV"
-        source_id = paper.arxiv_id or f"arxiv:{idx}"
-        trust_tag = "ARXIV_SOURCE"
-        score = f"{getattr(paper, 'score', 0.90):.2f}"
-        
-        # Sanitize fields for TOON row representation
-        title = paper.title.replace(",", ";").replace("\n", " ")
-        section = "Abstract"
-        text = paper.summary.replace("\n", " ").replace(",", ";")
-
-        rows.append(f"{source},{source_id},{trust_tag},{score},{title},{section},{text}")
-
-    header = f"context_chunks[{len(rows)}]{{source,source_id,trust_tag,score,title,section,text}}:"
-    return header + "\n" + "\n".join(rows)
-
-
 class ResearchAgent:
     def __init__(self, top_k: int = 6):
         self.top_k          = top_k
         self.cache          = PaperCache()
         self.session_memory = SessionMemory()
+        self.router          = get_router()  # QueryRouter, built once — not per-query
+        self.compiler         = ToonCompiler()
         self.history: list[dict] = []
         self._session_seen: set  = set()
         self._last_papers: list  = []
@@ -105,11 +86,14 @@ class ResearchAgent:
         self.history.append({"role": "user", "content": query})
 
         step("Classifying intent...")
-        intent = classify_intent(query)
+        with timed_stage("Intent Classification", step):
+            intent = classify_intent(query)
+
         context = self._build_context(intent, query, step)
 
         step("Analyzing query...")
-        plan: QueryPlan = analyze_query(query=query, context=context)
+        with timed_stage("Query Analysis", step):
+            plan: QueryPlan = analyze_query(query=query, context=context)
         step(f"   mode={plan.mode} terms={plan.search_terms} freshness={plan.freshness}")
 
         if plan.recall_mode:
@@ -119,30 +103,75 @@ class ResearchAgent:
             self._last_papers = []
             return {"answer": answer, "papers": [], "plan": plan}
 
+        step("Routing sources (arxiv / pwc / web)...")
+        with timed_stage("Source Routing", step):
+            decision = self.router.route(query)
+        step(f"   needs_arxiv={decision.needs_arxiv} needs_pwc={decision.needs_pwc} needs_web={decision.needs_web}")
+
+        # --- arXiv retrieval (unchanged logic — search-term/freshness based,
+        # not the router's needs_arxiv flag, since plan.mode=="known_paper"
+        # with a direct arxiv_id should still fetch regardless) ---
         step("Searching arXiv (adaptive)...")
-        papers = self._retrieve(plan, step)
+        with timed_stage("Paper Retrieval", step):
+            papers = self._retrieve(plan, step)
         step(f"   retrieved {len(papers)} paper(s)")
 
         if plan.mode == "search" and papers:
             if not papers_are_relevant(query, plan.search_terms, papers):
-                step("   not relevant — discarding")
+                step("   arxiv results not relevant — discarding")
                 papers = []
 
-        if not papers:
-            answer = self._answer_without_papers(query, plan)
+        rank_terms = plan.search_terms if plan.search_terms else [plan.topic]
+        top_papers = []
+        if papers:
+            with timed_stage("Paper Ranking", step):
+                top_papers = papers if (plan.mode == "known_paper" and len(papers) <= self.top_k) \
+                    else rank_papers(papers, rank_terms, top_k=self.top_k)
+
+        arxiv_chunks = map_to_pooled_chunks({"arxiv": top_papers}) if top_papers else []
+
+        # --- PWC enrichment (only makes sense if we have arxiv IDs to look up) ---
+        pwc_chunks: list = []
+        if decision.needs_pwc and top_papers:
+            step("Checking Papers With Code / HF for implementations...")
+            with timed_stage("PWC Fetch", step):
+                arxiv_ids = [p.arxiv_id for p in top_papers if getattr(p, "arxiv_id", None)]
+                pwc_chunks = fetch_by_arxiv_ids(arxiv_ids) if arxiv_ids else []
+            if pwc_chunks and not source_is_relevant(query, plan.search_terms, pwc_chunks):
+                step("   pwc results not relevant — discarding")
+                pwc_chunks = []
+
+        # --- Web (independent of arxiv — this is the path for closed-source
+        # models / no-paper topics, so it must run even when top_papers is empty) ---
+        web_chunks: list = []
+        if decision.needs_web:
+            step("Searching the web...")
+            with timed_stage("Web Fetch", step):
+                web_chunks = fetch_web_results(query)
+            if web_chunks and not source_is_relevant(query, plan.search_terms, web_chunks):
+                step("   web results not relevant — discarding")
+                web_chunks = []
+
+        # --- Pool + compile. Early-return only now, once EVERY active
+        # source has had its chance — not just arxiv. ---
+        with timed_stage("Pooling + TOON Compile", step):
+            grouped = {
+                Source.ARXIV: arxiv_chunks,
+                Source.PAPERSWITHCODE: pwc_chunks,
+                Source.WEB: web_chunks,
+            }
+            pooled = pool_chunks(grouped)
+            toon_context = self.compiler.compile(pooled) if pooled else ""
+
+        if not pooled:
+            answer = self._answer_without_context(query, plan, decision)
             self.history.append({"role": "agent", "content": answer[:300]})
             self._last_papers = []
             return {"answer": answer, "papers": [], "plan": plan}
 
-        rank_terms = plan.search_terms if plan.search_terms else [plan.topic]
-        top_papers = papers if (plan.mode == "known_paper" and len(papers) <= self.top_k) \
-            else rank_papers(papers, rank_terms, top_k=self.top_k)
-
-        step("Compiling TOON context...")
-        toon_context = _compile_toon_context(top_papers, query, plan.search_terms)
-
-        step("Reading papers + writing answer...")
-        answer = generate_answer(query, toon_context)
+        step("Reading sources + writing answer...")
+        with timed_stage("LLM Generation", step):
+            answer = generate_answer(query, toon_context)
 
         self._save(query, intent, plan, top_papers, answer)
         self.history.append({"role": "agent", "content": answer[:300]})
@@ -150,11 +179,19 @@ class ResearchAgent:
 
         return {"answer": answer, "papers": top_papers, "plan": plan}
 
-    def _answer_without_papers(self, query: str, plan: QueryPlan) -> str:
+    def _answer_without_context(self, query: str, plan: QueryPlan, decision) -> str:
         if plan.mode == "known_paper":
             concept = generate_concept_answer(query)
-            return f"Couldn't pull the exact paper right now. Here's what I know:\n\n{concept}\n\n*(general knowledge, not from a retrieved paper)*"
-        return f"Couldn't find arXiv papers matching \"{query}\" even after widening the search. Try rephrasing, or share a link/arXiv ID."
+            return f"Couldn't pull the exact paper right now. Here's what I know:\n\n{concept}\n\n*(general knowledge, not from a retrieved source)*"
+        tried = ["arXiv"]
+        if decision.needs_pwc:
+            tried.append("Papers With Code / HF")
+        if decision.needs_web:
+            tried.append("the web")
+        return (
+            f"Couldn't find anything relevant across {', '.join(tried)} for \"{query}\" "
+            f"even after widening the search. Try rephrasing, or share a link/arXiv ID."
+        )
 
     def run(self, query: str, verbose: bool = True) -> str:
         return self.ask(query, on_step=(print if verbose else None))["answer"]
