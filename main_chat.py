@@ -170,6 +170,8 @@ class ResearchAgent:
             return {"answer": answer, "papers": [], "plan": plan}
 
         step("Reading sources + writing answer...")
+        print(f"   pool sources: {[c.source.value for c in pooled]}")
+        print(f"   TOON preview: {toon_context[:500]}")
         with timed_stage("LLM Generation", step):
             answer = generate_answer(query, toon_context)
 
