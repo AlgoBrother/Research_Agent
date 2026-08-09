@@ -11,7 +11,15 @@ from typing import List
 from models.classes import Source
 from models.llm import chat_json
 
-SYSTEM = "You are a research query analyzer. Always respond with valid JSON only. No preamble."
+SYSTEM = (
+    "You are a research query analyzer for an AI/ML research assistant. "
+    "ALL queries are about artificial intelligence, machine learning, and computer science, even if "
+    "an acronym or term could ALSO mean something in a different field (e.g. 'VLA' in this context "
+    "almost always means 'vision-language-action', not the astronomical Very Large Array; 'GAN' means "
+    "generative adversarial network, not a person's name). When generating supporting search terms, "
+    "stay strictly within the ML/AI domain interpretation — do not invent terms from an unrelated field. "
+    "Always respond with valid JSON only. No preamble."
+)
 
 PROMPT_TEMPLATE = """Analyze this research query and return a JSON routing plan.
 
@@ -50,7 +58,6 @@ NEVER use noise words as terms: "paper", "research", "study", "method".
 
 ━━━ SOURCES ━━━
 "arxiv" → papers/theory  |  "github" → code  |  "web" → news
-DO NOT output any <think> tags or chain-of-thought prose. Respond ONLY with valid JSON matching the exact schema.
 
 JSON only:"""
 
@@ -69,9 +76,15 @@ def _extract_literal_subject(query: str) -> str:
     Keep only non-stopword tokens, preserving original order and casing.
     Far more robust than filler-stripping — finite stopword set vs
     infinite sentence-structure edge cases.
+
+    Strips possessive 's BEFORE tokenizing — otherwise "TurboVLA's" splits
+    into "TurboVLA" + a stray "s" token (apostrophes aren't word chars),
+    producing broken anchors like "s TurboVLA s implementation" instead
+    of "TurboVLA implementation".
     """
+    query = re.sub(r"'s\b", "", query)  # possessive stripping, e.g. "Claude's" -> "Claude"
     tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]*", query)
-    kept = [t for t in tokens if t.lower() not in _STOPWORDS]
+    kept = [t for t in tokens if t.lower() not in _STOPWORDS and len(t) > 1]
     return " ".join(kept) if kept else query.strip(" ?.!")
 
 
@@ -88,15 +101,18 @@ class QueryPlan:
         self.freshness: str    = data.get("freshness", "low")
         self.recall_mode: bool = self.mode == "recall"
 
-        if self.mode == "search" and original_query:
-            literal = _extract_literal_subject(original_query)
-            terms_lower = [t.lower() for t in self.search_terms]
-            # Only force-insert if no existing term already contains the subject
-            if literal and not any(literal.lower() in t for t in terms_lower):
-                self.search_terms.insert(0, literal)
-
         noise = {"paper", "papers", "research", "study", "method"}
         self.search_terms = [t for t in self.search_terms if t.lower() not in noise]
+
+        # Fallback — ONLY fires when the LLM gave us nothing
+        if self.mode == "search" and original_query and not self.search_terms:
+            literal = _extract_literal_subject(original_query)
+            if literal:
+                # Cap to the first few tokens. The actual subject, not the whole remaining sentence. Past ~4 words this stops
+                # being "a subject" and starts being the question restated.
+                literal_terms = literal.split()[:4]
+                if literal_terms:
+                    self.search_terms = [" ".join(literal_terms)]
 
         seen, deduped = set(), []
         for t in self.search_terms:
@@ -106,32 +122,20 @@ class QueryPlan:
                 deduped.append(t)
         self.search_terms = deduped[:4]
 
+        # A hard cap on the number of words per term. The LLM sometimes returns a
+        # long sentence instead of a short subject, which is not what we want.
+        MAX_WORDS_PER_TERM = 4
+        self.search_terms = [
+            " ".join(t.split()[:MAX_WORDS_PER_TERM]) for t in self.search_terms
+        ]
+
     def __repr__(self):
         if self.mode == "known_paper":
             return f"QueryPlan(mode=known_paper, ids={self.arxiv_ids}, fallback={self.search_terms})"
         return f"QueryPlan(mode={self.mode}, terms={self.search_terms}, freshness={self.freshness})"
 
-# Matches 4 digits, dot, 4-5 digits, optional version tag (e.g., 2307.08691, 2401.04088v2) for arXiv IDs in queries. Case-insensitive.
-ARXIV_ID_REGEX = re.compile(r"\b(\d{4}\.\d{4,5}(?:v\d+)?)\b", re.IGNORECASE)
 
 def analyze_query(query: str, context: str = "") -> QueryPlan:
-    # --- DETERMINISTIC PRE-CHECK FOR ARXIV IDS ---
-    found_ids = ARXIV_ID_REGEX.findall(query)
-    if found_ids:
-        return QueryPlan(
-            {
-                "mode": "known_paper",
-                "topic": f"Direct paper lookup for {', '.join(found_ids)}",
-                "arxiv_ids": found_ids,
-                "search_terms": found_ids,
-                "sources": ["arxiv"],
-                "freshness": "low",
-                "recall_mode": False,
-            },
-            original_query=query,
-        )
-
-    # Standard LLM classification path
     data = chat_json(
         PROMPT_TEMPLATE.format(query=query, context=context or "(none)"),
         system=SYSTEM,
