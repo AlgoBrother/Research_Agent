@@ -1,6 +1,6 @@
 import re 
 from typing import List, Set
-from models.classes import PooledChunk
+from utils.models.classes import PooledChunk
 
 class ToonCompiler:
     """

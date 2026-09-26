@@ -1,7 +1,7 @@
 import os
 import requests
 from typing import List
-from models.classes import PooledChunk, Source
+from utils.models.classes import PooledChunk, Source
 
 TAVILY_URL = "https://api.tavily.com/search"
 

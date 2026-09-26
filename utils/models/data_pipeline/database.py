@@ -8,9 +8,9 @@ Two things live here:
 import json
 from pathlib import Path
 from datetime import datetime
-from models.classes import Paper
+from utils.models.classes import Paper
 
-from models.classes import ResearchSession
+from utils.models.classes import ResearchSession
 
 
 # ─────────────────────────────────────────────
