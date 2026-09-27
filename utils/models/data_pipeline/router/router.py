@@ -1,7 +1,7 @@
 from typing import List
 import json
 from openai import OpenAI
-from models.classes import RouterDecision
+from utils.models.classes import RouterDecision
 
 
 SYSTEM_PROMPT = (
@@ -51,11 +51,11 @@ def _coerce_sub_questions(data: dict) -> dict:
         ]
     return data
 
-_NO_STRUCTURED_OUTPUT_SUPPORT = {"llama-3.1-8b-instant"}
+_NO_STRUCTURED_OUTPUT_SUPPORT = {"qwen/qwen3.8-27b"}
 
 
 class QueryRouter:
-    def __init__(self, client: OpenAI, model: str = "llama-3.1-8b-instant"):
+    def __init__(self, client: OpenAI, model: str = "qwen/qwen3.8-27b"):
         self.client = client
         self.model = model
 

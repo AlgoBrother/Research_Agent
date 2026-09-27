@@ -9,9 +9,9 @@ Usage:
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from agent_preprocessing.intent_classifier import classify_intent
-from agent_preprocessing.analyser import analyze_query
-from data_pipeline.arxiv import _build_query, FRESHNESS_DAYS
+from utils.models.data_pipeline.agent_preprocessing.intent_classifier import classify_intent
+from utils.models.data_pipeline.agent_preprocessing.analyser import analyze_query
+from utils.models.data_pipeline.arxiv import _build_query, FRESHNESS_DAYS
 from datetime import datetime, timedelta, timezone
 
 

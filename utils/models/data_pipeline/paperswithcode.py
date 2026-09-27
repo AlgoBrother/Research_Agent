@@ -21,7 +21,7 @@ and isn't a reliable enough primary retrieval path.
 
 import requests
 from typing import List, Optional
-from models.classes import PooledChunk, Source
+from utils.models.classes import PooledChunk, Source
 
 BASE_URL = "https://huggingface.co/api/papers"
 

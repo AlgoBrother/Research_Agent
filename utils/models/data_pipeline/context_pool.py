@@ -15,7 +15,7 @@ compiler. Two concerns, kept deliberately separate:
 """
 
 from typing import Dict, List, Optional
-from models.classes import PooledChunk, Source
+from utils.models.classes import PooledChunk, Source
 
 # Per-source cap: independent of how many results each fetcher returns.
 DEFAULT_SOURCE_CAPS: Dict[Source, int] = {

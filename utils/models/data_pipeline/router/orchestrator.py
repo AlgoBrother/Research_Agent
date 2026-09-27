@@ -2,9 +2,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List
 
 from utils.timeline import timed_stage
-from data_pipeline.router.router import QueryRouter, RouterDecision
-from data_pipeline.mappers import map_to_pooled_chunks
-from data_pipeline.toon_compiler import ToonCompiler
+from utils.models.data_pipeline.router.router import QueryRouter, RouterDecision
+from utils.models.data_pipeline.mappers import map_to_pooled_chunks
+from utils.models.data_pipeline.toon_compiler import ToonCompiler
 
 
 class Orchestrator:

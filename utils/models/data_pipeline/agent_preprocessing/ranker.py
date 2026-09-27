@@ -13,7 +13,7 @@ Three signals:
 import math
 from datetime import datetime, timezone
 from typing import List
-from models.classes import Paper
+from utils.models.classes import Paper
 
 def _relevance_score(paper: Paper, search_items: List[str]) -> float:
     text_title = paper.title.lower()

@@ -6,8 +6,8 @@ STANDALONE → self-contained general knowledge question
 
 """
 
-from models.classes import QueryIntent
-from models.llm import chat
+from utils.models.classes import QueryIntent
+from utils.models.llm import chat
 
 SYSTEM_PROMPT = "You classify research queries. Respond with exactly one word." # we want a single word response to make it easy to parse
 PROMPT_TEMPLATE = """Classify this query. Output exactly one word: PROJECT or STANDALONE.

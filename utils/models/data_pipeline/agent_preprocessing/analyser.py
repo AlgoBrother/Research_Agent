@@ -8,8 +8,8 @@ Query analyzer— takes the raw user query and decides:
 
 import re
 from typing import List
-from models.classes import Source
-from models.llm import chat_json
+from utils.models.classes import Source
+from utils.models.llm import chat_json
 
 SYSTEM = (
     "You are a research query analyzer for an AI/ML research assistant. "

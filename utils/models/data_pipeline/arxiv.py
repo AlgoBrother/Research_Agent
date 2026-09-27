@@ -10,7 +10,7 @@ nothing, automatically widen the search instead of giving up.
 import arxiv
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
-from models.classes import Paper
+from utils.models.classes import Paper
 
 # Escalation ladder for adaptive retry — used only when freshness="high" or "medium"
 FRESHNESS_LADDER = [7, 30, 180, None]  # None = no cutoff, search all time
@@ -106,7 +106,11 @@ def fetch_papers(
     query = _build_query(search_terms)
     print(f"   arXiv query: {query!r}")
 
-    client = arxiv.Client(page_size=max_results, delay_seconds=1.0, num_retries=3)
+    client = arxiv.Client(
+        page_size=max_results,
+        delay_seconds=1.0,
+        num_retries=3
+    )
 
     if freshness == "low" or not adaptive:
         lookback = FRESHNESS_DAYS.get(freshness)

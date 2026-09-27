@@ -1,6 +1,6 @@
 # mappers.py
 from typing import Dict, Any, List
-from models.classes import PooledChunk, Source, Paper
+from utils.models.classes import PooledChunk, Source, Paper
 
 def map_to_pooled_chunks(raw_results: Dict[str, Any]) -> List[PooledChunk]:
     """

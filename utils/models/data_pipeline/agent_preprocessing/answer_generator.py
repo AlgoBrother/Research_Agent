@@ -4,9 +4,9 @@ answer_generator.py — Synthesizes research answers using TOON context & target
 
 import re
 from typing import List, Generator
-from models.classes import Paper
-from models.llm import chat
-from data_pipeline.pdf_fetcher import fetch_paper_text
+from utils.models.classes import Paper
+from utils.models.llm import chat
+from utils.models.data_pipeline.pdf_fetcher import fetch_paper_text
 
 
 TOON_SYSTEM = (
@@ -119,7 +119,7 @@ def extract_targeted_sections(
 def generate_answer(
     query: str,
     toon_context: str,
-    model: str = "llama-3.3-70b-versatile",
+    model: str = "qwen/qwen3.8-27b",
     max_tokens: int = 1500,
 ) -> str:
     """
@@ -139,7 +139,7 @@ def generate_answer(
     )
 
 
-def generate_concept_answer(query: str, model: str = "llama-3.3-70b-versatile") -> str:
+def generate_concept_answer(query: str, model: str = "qwen/qwen3.8-27b") -> str:
     """Fallback generator for general knowledge/concept questions without context."""
     prompt = f"Explain this concept clearly and accurately: {query}\n\nGeneral knowledge, not a specific paper. Note uncertainty if relevant."
     return chat(prompt, system=TOON_SYSTEM, model=model, max_tokens=800, temperature=0.3)

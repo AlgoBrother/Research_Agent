@@ -1,6 +1,7 @@
 arxiv
 openai
 pydantic
+chromadb
 python-dotenv
 markdown
 langchain
@@ -14,3 +15,4 @@ mcp
 tqdm
 streamlit                  
 pypdf         
+dotenv

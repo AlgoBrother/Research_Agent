@@ -14,7 +14,7 @@ Two gates that sit between retrieval and answer generation:
 
 import re
 from typing import List
-from models.classes import Paper, PooledChunk, Source
+from utils.models.classes import Paper, PooledChunk, Source
 
 
 # Common greetings / chitchat that should never trigger research pipeline

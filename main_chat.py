@@ -1,20 +1,20 @@
 import sys, os, re
 sys.path.insert(0, os.path.dirname(__file__))
 
-from models.classes import QueryIntent, Source, ResearchSession, PooledChunk
-from agent_preprocessing.intent_classifier import classify_intent
-from agent_preprocessing.analyser          import analyze_query, QueryPlan
-from agent_preprocessing.ranker            import rank_papers
-from agent_preprocessing.answer_generator  import generate_answer, generate_concept_answer, extract_targeted_sections
-from agent_preprocessing.relevance_gate    import is_research_query, papers_are_relevant, source_is_relevant
-from data_pipeline.arxiv                   import fetch_papers, fetch_by_ids
-from data_pipeline.paperswithcode          import fetch_by_arxiv_ids
-from data_pipeline.websearch             import fetch_web_results
-from data_pipeline.mappers                 import map_to_pooled_chunks
-from data_pipeline.context_pool            import pool_chunks
-from data_pipeline.toon_compiler           import ToonCompiler
-from data_pipeline.database                import PaperCache, SessionMemory
-from models.llm                            import chat, get_router
+from utils.models.classes import QueryIntent, Source, ResearchSession, PooledChunk
+from utils.models.data_pipeline.agent_preprocessing.intent_classifier import classify_intent
+from utils.models.data_pipeline.agent_preprocessing.analyser          import analyze_query, QueryPlan
+from utils.models.data_pipeline.agent_preprocessing.ranker            import rank_papers
+from utils.models.data_pipeline.agent_preprocessing.answer_generator  import generate_answer, generate_concept_answer, extract_targeted_sections
+from utils.models.data_pipeline.agent_preprocessing.relevance_gate    import is_research_query, papers_are_relevant, source_is_relevant
+from utils.models.data_pipeline.arxiv                   import fetch_papers, fetch_by_ids
+from utils.models.data_pipeline.paperswithcode          import fetch_by_arxiv_ids
+from utils.models.data_pipeline.websearch             import fetch_web_results
+from utils.models.data_pipeline.mappers                 import map_to_pooled_chunks
+from utils.models.data_pipeline.context_pool            import pool_chunks
+from utils.models.data_pipeline.toon_compiler           import ToonCompiler
+from utils.models.data_pipeline.database                import PaperCache, SessionMemory
+from utils.models.llm                            import chat, get_router
 from utils.timeline                        import timed_stage
 
 FOLLOWUP_SIGNALS = re.compile(

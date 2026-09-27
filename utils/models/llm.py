@@ -37,16 +37,16 @@ def get_router(client: OpenAI | None = None):
     may itself import from models.llm) — only pay that cost if this is
     actually called.
     """
-    from data_pipeline.router.router import QueryRouter
+    from utils.models.data_pipeline.router.router import QueryRouter
     if client is None:
         client = get_client()
-    return QueryRouter(client=client, model="llama-3.1-8b-instant")
+    return QueryRouter(client=client, model="qwen/qwen3.8-27b")
 
 
 def chat(
     prompt: str,
     system: str = "You are a helpful research assistant.",
-    model: str = "llama-3.1-8b-instant",  # non-reasoning default
+    model: str = "qwen/qwen3.8-27b",  # non-reasoning default
     temperature: float = 0.2,
     max_tokens: int = 1024
 ) -> str:
@@ -76,7 +76,7 @@ def chat(
 def chat_json(
     prompt: str,
     system: str = "You are a helpful research assistant.",
-    model: str = "llama-3.1-8b-instant",
+    model: str = "qwen/qwen3.8-27b",
     temperature: float = 0.1,
     max_tokens: int = 1024
 ) -> dict:
