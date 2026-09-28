@@ -1,6 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
 
 type Paper = {
   title: string | null;
@@ -14,22 +16,133 @@ type Paper = {
 type Msg = {
   role: "user" | "assistant";
   content: string;
-  status?: string;
+  steps?: string[];
   papers?: Paper[];
+  done?: boolean;
 };
 
-// A random-enough per-tab session id, kept for the life of the tab, so the
-// backend can keep a stateful ResearchAgent per session (conversation
-// history, session memory) instead of one shared instance.
+const SESSION_KEY = "arxagent_session_id";
+
+const EXAMPLES = [
+  "Tell me about FlashAttention-2",
+  "How do state space models differ from vanilla transformers?",
+  "What problem did the original Transformer paper solve?",
+];
+
+// One id per tab so the backend keeps a separate ResearchAgent (history, memory) per conversation.
 function getSessionId(): string {
-  if (typeof window === "undefined") return "server";
-  const key = "arxagent_session_id";
-  let id = sessionStorage.getItem(key);
+  let id = sessionStorage.getItem(SESSION_KEY);
   if (!id) {
     id = crypto.randomUUID();
-    sessionStorage.setItem(key, id);
+    sessionStorage.setItem(SESSION_KEY, id);
   }
   return id;
+}
+
+// Turn [2307.08691v1] / [id1, id2] / [github.com/x/y] into markdown links so they render as chips.
+const ARXIV_ID = String.raw`\d{4}\.\d{4,5}(?:v\d+)?`;
+const ARXIV_CITE = new RegExp(String.raw`\[(${ARXIV_ID}(?:\s*,\s*${ARXIV_ID})*)\]`, "g");
+const REPO_CITE = /\[((?:github\.com|huggingface\.co)\/[^\]\s]+)\]/g;
+
+function linkCitations(text: string): string {
+  return text
+    .replace(ARXIV_CITE, (_m, ids: string) =>
+      ids
+        .split(/\s*,\s*/)
+        .map((id) => `[${id}](https://arxiv.org/abs/${id})`)
+        .join(" ")
+    )
+    .replace(REPO_CITE, (_m, path: string) => `[${path}](https://${path})`);
+}
+
+const mdComponents = {
+  a: ({ href, children }: { href?: string; children?: ReactNode }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className={href?.startsWith("https://arxiv.org/abs/") ? "cite" : undefined}
+    >
+      {children}
+    </a>
+  ),
+};
+
+function Steps({ list }: { list: string[] }) {
+  return (
+    <ul className="steps">
+      {list.map((s, i) => {
+        const sub = /^\s{2,}/.test(s);
+        return (
+          <li key={i} className={`${sub ? "sub" : ""} ${i === list.length - 1 ? "now" : ""}`.trim()}>
+            {s.trim()}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function Trace({ steps, live }: { steps: string[]; live: boolean }) {
+  if (live) {
+    return (
+      <div className="trace">
+        <Steps list={steps.length ? steps : ["Starting"]} />
+      </div>
+    );
+  }
+  if (!steps.length) return null;
+  return (
+    <details className="trace">
+      <summary>{steps.length} steps</summary>
+      <Steps list={steps} />
+    </details>
+  );
+}
+
+function Sources({ papers }: { papers: Paper[] }) {
+  return (
+    <section className="sources" aria-label="Sources">
+      <h2>Sources</h2>
+      <ul>
+        {papers.map((p, i) => {
+          const href = p.arxiv_id ? `https://arxiv.org/abs/${p.arxiv_id}` : p.pdf_url ?? undefined;
+          const authors = (p.authors ?? []).slice(0, 2).join(", ") + ((p.authors?.length ?? 0) > 2 ? " et al." : "");
+          return (
+            <li key={i} className="source">
+              {href ? (
+                <a href={href} target="_blank" rel="noreferrer">
+                  {p.title ?? "Untitled"}
+                </a>
+              ) : (
+                <span>{p.title ?? "Untitled"}</span>
+              )}
+              <div className="source-meta">
+                <span>{authors}</span>
+                <span>{p.published?.slice(0, 10)}</span>
+              </div>
+              {p.summary && <p>{p.summary}</p>}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function Assistant({ m, streaming }: { m: Msg; streaming: boolean }) {
+  const live = !m.content && !m.done;
+  return (
+    <article className="turn-ai">
+      <Trace steps={m.steps ?? []} live={live} />
+      {m.content && (
+        <div className={`answer${streaming ? " streaming" : ""}`}>
+          <ReactMarkdown components={mdComponents}>{linkCitations(m.content)}</ReactMarkdown>
+        </div>
+      )}
+      {m.papers && m.papers.length > 0 && <Sources papers={m.papers} />}
+    </article>
+  );
 }
 
 export default function Home() {
@@ -37,25 +150,60 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
 
-  function updateLast(patch: Partial<Msg>) {
+  // Keep the newest text in view, unless the reader has scrolled up.
+  useEffect(() => {
+    const onScroll = () => {
+      stick.current = window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (stick.current) endRef.current?.scrollIntoView({ block: "end" });
+  }, [messages]);
+
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
+  }, [input]);
+
+  function patchLast(fn: (m: Msg) => Msg) {
     setMessages((prev) => {
+      if (!prev.length) return prev;
       const next = [...prev];
-      next[next.length - 1] = { ...next[next.length - 1], ...patch };
+      next[next.length - 1] = fn(next[next.length - 1]);
       return next;
     });
   }
 
-  async function sendMessage() {
-    const query = input.trim();
+  function newChat() {
+    controllerRef.current?.abort();
+    sessionStorage.removeItem(SESSION_KEY);
+    setMessages([]);
+    setLoading(false);
+    stick.current = true;
+    taRef.current?.focus();
+  }
+
+  async function send(text?: string) {
+    const query = (text ?? input).trim();
     if (!query || loading) return;
 
-    setMessages((m) => [...m, { role: "user", content: query }, { role: "assistant", content: "" }]);
+    stick.current = true;
+    setMessages((m) => [...m, { role: "user", content: query }, { role: "assistant", content: "", steps: [] }]);
     setInput("");
     setLoading(true);
 
     const controller = new AbortController();
     controllerRef.current = controller;
+    const current = () => controllerRef.current === controller;
 
     try {
       const res = await fetch("/api/query", {
@@ -66,13 +214,11 @@ export default function Home() {
       });
 
       if (res.status === 429) {
-        const data = await res.json().catch(() => ({}));
-        updateLast({ content: data.error ?? "Rate limited. Try again shortly.", status: undefined });
+        patchLast((m) => ({ ...m, content: "You're asking too quickly. Wait a few seconds and try again." }));
         return;
       }
-
       if (!res.ok || !res.body) {
-        updateLast({ content: "Something went wrong reaching ArXAgent.", status: undefined });
+        patchLast((m) => ({ ...m, content: "Couldn't reach the research backend. Check that it's running, then try again." }));
         return;
       }
 
@@ -85,138 +231,116 @@ export default function Home() {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        // SSE frames are separated by a blank line; each starts with "data: ".
+        // SSE frames end with a blank line; keep any partial frame for the next chunk.
         const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? ""; // last (possibly incomplete) frame stays buffered
+        buffer = frames.pop() ?? "";
 
         for (const frame of frames) {
           const line = frame.trim();
           if (!line.startsWith("data:")) continue;
-          const jsonStr = line.slice("data:".length).trim();
-          if (!jsonStr) continue;
-
           let event: any;
           try {
-            event = JSON.parse(jsonStr);
+            event = JSON.parse(line.slice(5).trim());
           } catch {
             continue;
           }
 
           if (event.type === "step") {
-            updateLast({ status: event.message });
-          } else if (event.type === "answer") {
-            updateLast({ content: event.answer, status: undefined, papers: event.papers ?? [] });
+            patchLast((m) => ({ ...m, steps: [...(m.steps ?? []), String(event.message)] }));
+          } else if (event.type === "token") {
+            patchLast((m) => ({ ...m, content: m.content + event.token }));
+          } else if (event.type === "done" || event.type === "answer") {
+            // Paths that never stream tokens (short replies, no evidence) carry the full text here.
+            patchLast((m) => ({ ...m, content: m.content || event.answer || "", papers: event.papers ?? [] }));
           } else if (event.type === "error") {
-            updateLast({ content: `Error: ${event.message}`, status: undefined });
+            patchLast((m) => ({ ...m, content: `The agent hit an error: ${event.message}` }));
           }
         }
       }
-    } catch {
-      updateLast({ content: "Connection interrupted.", status: undefined });
+    } catch (err) {
+      if (!current()) return;
+      const aborted = err instanceof DOMException && err.name === "AbortError";
+      patchLast((m) => ({
+        ...m,
+        content: m.content || (aborted ? "Stopped." : "The connection dropped before an answer arrived. Try again."),
+      }));
     } finally {
-      setLoading(false);
+      if (current()) {
+        setLoading(false);
+        patchLast((m) => ({ ...m, done: true }));
+      }
     }
   }
 
   return (
-    <main
-      style={{
-        maxWidth: 760,
-        margin: "0 auto",
-        padding: "2rem 1rem",
-        fontFamily: "system-ui, -apple-system, sans-serif",
-        minHeight: "100vh",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
-      <h1 style={{ fontSize: "1.4rem", marginBottom: "1.25rem", color: "#111827" }}>
-        ArXAgent
-      </h1>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.9rem", flex: 1, marginBottom: "1.5rem" }}>
-        {messages.length === 0 && (
-          <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>
-            Ask about a paper, topic, or recent research to get started.
-          </p>
+    <div className="shell">
+      <header className="topbar">
+        <span className="wordmark">ArXAgent</span>
+        {messages.length > 0 && (
+          <button className="ghost" onClick={newChat}>
+            New chat
+          </button>
         )}
-        {messages.map((m, i) => (
-          <div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "88%" }}>
-            <div
-              style={{
-                background: m.role === "user" ? "#111827" : "#f3f4f6",
-                color: m.role === "user" ? "#fff" : "#111827",
-                padding: "0.6rem 0.9rem",
-                borderRadius: 10,
-                whiteSpace: "pre-wrap",
-                fontSize: "0.92rem",
-                lineHeight: 1.45,
-              }}
-            >
-              {m.content || (m.status ? `⏳ ${m.status}` : loading && i === messages.length - 1 ? "…" : "")}
-            </div>
+      </header>
 
-            {m.papers && m.papers.length > 0 && (
-              <details style={{ marginTop: "0.5rem", fontSize: "0.85rem", color: "#374151" }}>
-                <summary style={{ cursor: "pointer", color: "#6b7280" }}>
-                  {m.papers.length} source paper{m.papers.length > 1 ? "s" : ""}
-                </summary>
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", marginTop: "0.5rem" }}>
-                  {m.papers.map((p, j) => (
-                    <div key={j} style={{ borderLeft: "2px solid #e5e7eb", paddingLeft: "0.6rem" }}>
-                      {p.pdf_url ? (
-                        <a href={p.pdf_url} target="_blank" rel="noreferrer" style={{ fontWeight: 600, color: "#111827" }}>
-                          {p.title}
-                        </a>
-                      ) : (
-                        <span style={{ fontWeight: 600 }}>{p.title}</span>
-                      )}
-                      <div style={{ color: "#6b7280", fontSize: "0.8rem" }}>
-                        {p.authors?.slice(0, 2).join(", ")}
-                        {p.authors && p.authors.length > 2 ? " et al." : ""}
-                        {p.published ? ` · ${p.published.slice(0, 10)}` : ""}
-                      </div>
-                      {p.summary && <div style={{ fontSize: "0.82rem", marginTop: "0.2rem" }}>{p.summary.slice(0, 200)}…</div>}
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
-          </div>
-        ))}
-      </div>
+      <main className="thread">
+        {messages.length === 0 ? (
+          <section className="empty">
+            <h1>Ask about a paper, method, or model.</h1>
+            <p>ArXAgent searches arXiv, Papers With Code and the web, then answers with citations you can open.</p>
+            <ul className="prompts">
+              {EXAMPLES.map((q) => (
+                <li key={q}>
+                  <button className="prompt" onClick={() => send(q)}>
+                    {q}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : (
+          messages.map((m, i) =>
+            m.role === "user" ? (
+              <div key={i} className="turn-user">
+                {m.content}
+              </div>
+            ) : (
+              <Assistant key={i} m={m} streaming={loading && i === messages.length - 1} />
+            )
+          )
+        )}
+        <div ref={endRef} className="end" />
+      </main>
 
-      <div style={{ display: "flex", gap: "0.5rem" }}>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-          placeholder="Ask ArXAgent about a paper or topic…"
-          style={{
-            flex: 1,
-            padding: "0.65rem 0.9rem",
-            borderRadius: 8,
-            border: "1px solid #d1d5db",
-            fontSize: "0.92rem",
-          }}
-        />
-        <button
-          onClick={sendMessage}
-          disabled={loading}
-          style={{
-            padding: "0.65rem 1.2rem",
-            borderRadius: 8,
-            background: "#111827",
-            color: "#fff",
-            border: "none",
-            fontSize: "0.92rem",
-            cursor: loading ? "default" : "pointer",
-            opacity: loading ? 0.6 : 1,
-          }}
-        >
-          {loading ? "…" : "Send"}
-        </button>
-      </div>
-    </main>
+      <footer className="composer">
+        <div className="box">
+          <textarea
+            ref={taRef}
+            rows={1}
+            autoFocus
+            value={input}
+            aria-label="Your question"
+            placeholder="Ask about a paper, method, or model"
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                send();
+              }
+            }}
+          />
+          {loading ? (
+            <button className="send stop" onClick={() => controllerRef.current?.abort()}>
+              Stop
+            </button>
+          ) : (
+            <button className="send" onClick={() => send()} disabled={!input.trim()}>
+              Ask
+            </button>
+          )}
+        </div>
+        <p className="hint">Enter to send, Shift+Enter for a new line</p>
+      </footer>
+    </div>
   );
 }
