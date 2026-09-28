@@ -5,7 +5,7 @@ from utils.models.classes import QueryIntent, Source, ResearchSession, PooledChu
 from utils.models.data_pipeline.agent_preprocessing.intent_classifier import classify_intent
 from utils.models.data_pipeline.agent_preprocessing.analyser          import analyze_query, QueryPlan
 from utils.models.data_pipeline.agent_preprocessing.ranker            import rank_papers
-from utils.models.data_pipeline.agent_preprocessing.answer_generator  import generate_answer, generate_concept_answer, extract_targeted_sections
+from utils.models.data_pipeline.agent_preprocessing.answer_generator  import generate_answer, generate_answer_stream, generate_concept_answer, extract_targeted_sections
 from utils.models.data_pipeline.agent_preprocessing.relevance_gate    import is_research_query, papers_are_relevant, source_is_relevant
 from utils.models.data_pipeline.arxiv                   import fetch_papers, fetch_by_ids
 from utils.models.data_pipeline.paperswithcode          import fetch_by_arxiv_ids
@@ -62,7 +62,13 @@ class ResearchAgent:
         self._session_seen: set  = set()
         self._last_papers: list  = []
 
-    def ask(self, query: str, on_step=None) -> dict:
+    def ask(self, query: str, on_step=None, on_token=None) -> dict:
+        """
+        on_step: optional callback(str) — coarse progress updates ("Searching arXiv...").
+        on_token: optional callback(str) — fired with each text delta as the final
+                  answer is generated, for live token streaming to a client. When
+                  omitted, the answer is generated in one blocking call as before.
+        """
         def step(msg):
             if on_step: on_step(msg)
 
@@ -173,7 +179,14 @@ class ResearchAgent:
         print(f"   pool sources: {[c.source.value for c in pooled]}")
         print(f"   TOON preview: {toon_context[:500]}")
         with timed_stage("LLM Generation", step):
-            answer = generate_answer(query, toon_context)
+            if on_token:
+                parts = []
+                for delta in generate_answer_stream(query, toon_context):
+                    parts.append(delta)
+                    on_token(delta)
+                answer = "".join(parts)
+            else:
+                answer = generate_answer(query, toon_context)
 
         self._save(query, intent, plan, top_papers, answer)
         self.history.append({"role": "agent", "content": answer[:300]})

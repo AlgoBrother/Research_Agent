@@ -16,3 +16,4 @@ tqdm
 streamlit                  
 pypdf         
 dotenv
+fastapi

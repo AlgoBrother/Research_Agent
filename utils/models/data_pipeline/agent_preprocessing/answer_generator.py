@@ -5,7 +5,7 @@ answer_generator.py — Synthesizes research answers using TOON context & target
 import re
 from typing import List, Generator
 from utils.models.classes import Paper
-from utils.models.llm import chat
+from utils.models.llm import chat, chat_stream
 from utils.models.data_pipeline.pdf_fetcher import fetch_paper_text
 
 
@@ -124,13 +124,42 @@ def generate_answer(
 ) -> str:
     """
     Primary generator: Accepts compiled TOON context string from Orchestrator
-    and streams/returns cited answer.
+    and returns the full cited answer in one call. Kept for callers that
+    don't need token-level streaming (e.g. concept fallback, recall summary).
     """
     if not toon_context or "context_chunks[0]" in toon_context:
         return NO_EVIDENCE_TEMPLATE.format(query=query)
 
     prompt = TOON_ANSWER_PROMPT.format(query=query, toon_context=toon_context)
     return chat(
+        prompt,
+        system=TOON_SYSTEM,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=0.2
+    )
+
+
+def generate_answer_stream(
+    query: str,
+    toon_context: str,
+    model: str = "qwen/qwen3.8-27b",
+    max_tokens: int = 1500,
+) -> Generator[str, None, None]:
+    """
+    Streaming counterpart to generate_answer(). Yields text deltas as the
+    model writes them, for callers (ResearchAgent.ask via on_token) that want
+    to forward tokens to a live client instead of waiting for the full answer.
+
+    No-context case still yields the full NO_EVIDENCE_TEMPLATE as a single
+    chunk rather than a real stream, since there's nothing to generate.
+    """
+    if not toon_context or "context_chunks[0]" in toon_context:
+        yield NO_EVIDENCE_TEMPLATE.format(query=query)
+        return
+
+    prompt = TOON_ANSWER_PROMPT.format(query=query, toon_context=toon_context)
+    yield from chat_stream(
         prompt,
         system=TOON_SYSTEM,
         model=model,

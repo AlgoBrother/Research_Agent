@@ -2,7 +2,35 @@
 
 import { useRef, useState } from "react";
 
-type Msg = { role: "user" | "assistant"; content: string };
+type Paper = {
+  title: string | null;
+  pdf_url: string | null;
+  authors: string[];
+  published: string | null;
+  summary: string | null;
+  arxiv_id: string | null;
+};
+
+type Msg = {
+  role: "user" | "assistant";
+  content: string;
+  status?: string;
+  papers?: Paper[];
+};
+
+// A random-enough per-tab session id, kept for the life of the tab, so the
+// backend can keep a stateful ResearchAgent per session (conversation
+// history, session memory) instead of one shared instance.
+function getSessionId(): string {
+  if (typeof window === "undefined") return "server";
+  const key = "arxagent_session_id";
+  let id = sessionStorage.getItem(key);
+  if (!id) {
+    id = crypto.randomUUID();
+    sessionStorage.setItem(key, id);
+  }
+  return id;
+}
 
 export default function Home() {
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -10,11 +38,10 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
 
-  function appendToLast(text: string) {
+  function updateLast(patch: Partial<Msg>) {
     setMessages((prev) => {
       const next = [...prev];
-      const last = next[next.length - 1];
-      next[next.length - 1] = { ...last, content: last.content + text };
+      next[next.length - 1] = { ...next[next.length - 1], ...patch };
       return next;
     });
   }
@@ -34,31 +61,58 @@ export default function Home() {
       const res = await fetch("/api/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, session_id: getSessionId() }),
         signal: controller.signal,
       });
 
       if (res.status === 429) {
         const data = await res.json().catch(() => ({}));
-        appendToLast(data.error ?? "Rate limited. Try again shortly.");
+        updateLast({ content: data.error ?? "Rate limited. Try again shortly.", status: undefined });
         return;
       }
 
       if (!res.ok || !res.body) {
-        appendToLast("Something went wrong reaching ArXAgent.");
+        updateLast({ content: "Something went wrong reaching ArXAgent.", status: undefined });
         return;
       }
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
+      let buffer = "";
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        appendToLast(decoder.decode(value, { stream: true }));
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE frames are separated by a blank line; each starts with "data: ".
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? ""; // last (possibly incomplete) frame stays buffered
+
+        for (const frame of frames) {
+          const line = frame.trim();
+          if (!line.startsWith("data:")) continue;
+          const jsonStr = line.slice("data:".length).trim();
+          if (!jsonStr) continue;
+
+          let event: any;
+          try {
+            event = JSON.parse(jsonStr);
+          } catch {
+            continue;
+          }
+
+          if (event.type === "step") {
+            updateLast({ status: event.message });
+          } else if (event.type === "answer") {
+            updateLast({ content: event.answer, status: undefined, papers: event.papers ?? [] });
+          } else if (event.type === "error") {
+            updateLast({ content: `Error: ${event.message}`, status: undefined });
+          }
+        }
       }
     } catch {
-      appendToLast("Connection interrupted.");
+      updateLast({ content: "Connection interrupted.", status: undefined });
     } finally {
       setLoading(false);
     }
@@ -67,7 +121,7 @@ export default function Home() {
   return (
     <main
       style={{
-        maxWidth: 720,
+        maxWidth: 760,
         margin: "0 auto",
         padding: "2rem 1rem",
         fontFamily: "system-ui, -apple-system, sans-serif",
@@ -80,28 +134,54 @@ export default function Home() {
         ArXAgent
       </h1>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", flex: 1, marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.9rem", flex: 1, marginBottom: "1.5rem" }}>
         {messages.length === 0 && (
           <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>
             Ask about a paper, topic, or recent research to get started.
           </p>
         )}
         {messages.map((m, i) => (
-          <div
-            key={i}
-            style={{
-              alignSelf: m.role === "user" ? "flex-end" : "flex-start",
-              background: m.role === "user" ? "#111827" : "#f3f4f6",
-              color: m.role === "user" ? "#fff" : "#111827",
-              padding: "0.6rem 0.9rem",
-              borderRadius: 10,
-              maxWidth: "85%",
-              whiteSpace: "pre-wrap",
-              fontSize: "0.92rem",
-              lineHeight: 1.45,
-            }}
-          >
-            {m.content || (loading && m.role === "assistant" && i === messages.length - 1 ? "…" : "")}
+          <div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "88%" }}>
+            <div
+              style={{
+                background: m.role === "user" ? "#111827" : "#f3f4f6",
+                color: m.role === "user" ? "#fff" : "#111827",
+                padding: "0.6rem 0.9rem",
+                borderRadius: 10,
+                whiteSpace: "pre-wrap",
+                fontSize: "0.92rem",
+                lineHeight: 1.45,
+              }}
+            >
+              {m.content || (m.status ? `⏳ ${m.status}` : loading && i === messages.length - 1 ? "…" : "")}
+            </div>
+
+            {m.papers && m.papers.length > 0 && (
+              <details style={{ marginTop: "0.5rem", fontSize: "0.85rem", color: "#374151" }}>
+                <summary style={{ cursor: "pointer", color: "#6b7280" }}>
+                  {m.papers.length} source paper{m.papers.length > 1 ? "s" : ""}
+                </summary>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", marginTop: "0.5rem" }}>
+                  {m.papers.map((p, j) => (
+                    <div key={j} style={{ borderLeft: "2px solid #e5e7eb", paddingLeft: "0.6rem" }}>
+                      {p.pdf_url ? (
+                        <a href={p.pdf_url} target="_blank" rel="noreferrer" style={{ fontWeight: 600, color: "#111827" }}>
+                          {p.title}
+                        </a>
+                      ) : (
+                        <span style={{ fontWeight: 600 }}>{p.title}</span>
+                      )}
+                      <div style={{ color: "#6b7280", fontSize: "0.8rem" }}>
+                        {p.authors?.slice(0, 2).join(", ")}
+                        {p.authors && p.authors.length > 2 ? " et al." : ""}
+                        {p.published ? ` · ${p.published.slice(0, 10)}` : ""}
+                      </div>
+                      {p.summary && <div style={{ fontSize: "0.82rem", marginTop: "0.2rem" }}>{p.summary.slice(0, 200)}…</div>}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
           </div>
         ))}
       </div>

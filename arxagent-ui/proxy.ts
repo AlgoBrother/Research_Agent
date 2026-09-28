@@ -8,12 +8,13 @@ import { Redis } from "@upstash/redis";
  * stops raw request-flooding before it ever reaches Groq.
  *
  * Production (Vercel): set UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
- * (free tier at upstash.com) so limits are shared across edge instances.
+ * (free tier at upstash.com) so limits are shared across every serverless
+ * instance handling requests.
  *
  * Local dev without those env vars: falls back to an in-memory counter.
- * This fallback is NOT safe in production — Vercel edge functions are
- * stateless across regions/instances, so it would not actually enforce a
- * global limit. It exists purely so `next dev` works out of the box.
+ * This fallback is NOT safe in production — a deployed app can run multiple
+ * instances with separate memory, so it would not actually enforce a global
+ * limit. It exists purely so `next dev` works out of the box.
  */
 
 const WINDOW = "1 m";
@@ -48,7 +49,7 @@ function memoryLimit(ip: string) {
   return { success: entry.count <= LIMIT };
 }
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const ip =
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
     req.headers.get("x-real-ip") ??

@@ -1,6 +1,7 @@
 import os
 import re
 import json
+from typing import Generator
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -43,6 +44,25 @@ def get_router(client: OpenAI | None = None):
     return QueryRouter(client=client, model="qwen/qwen3.8-27b")
 
 
+def _build_kwargs(model: str, temperature: float, max_tokens: int, system: str, prompt: str, stream: bool) -> dict:
+    kwargs = dict(
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stream=stream,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt}
+        ]
+    )
+    if model in REASONING_MODELS:
+        if model.startswith("qwen/qwen3"):
+            kwargs["reasoning_effort"] = "none"
+        else:
+            kwargs["reasoning_format"] = "hidden"
+    return kwargs
+
+
 def chat(
     prompt: str,
     system: str = "You are a helpful research assistant.",
@@ -51,26 +71,40 @@ def chat(
     max_tokens: int = 1024
 ) -> str:
     client = get_client()
-    kwargs = dict(
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
-    if model in REASONING_MODELS:
-        if model.startswith("qwen/qwen3"):
-            # qwen3 family: reasoning_effort="none" TRULY disables thinking
-            kwargs["reasoning_effort"] = "none"
-        else:
-            # gpt-oss family reasons always-on and can't be fully disabled
-            kwargs["reasoning_format"] = "hidden"
-
+    kwargs = _build_kwargs(model, temperature, max_tokens, system, prompt, stream=False)
     response = client.chat.completions.create(**kwargs)
     return response.choices[0].message.content.strip()
+
+
+def chat_stream(
+    prompt: str,
+    system: str = "You are a helpful research assistant.",
+    model: str = "qwen/qwen3.8-27b",
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+) -> Generator[str, None, None]:
+    """
+    Token-delta streaming counterpart to chat(). Yields text pieces as they
+    arrive from Groq instead of blocking for the full completion.
+
+    NOTE: does not strip <think> blocks — only use this with non-reasoning
+    models (the default qwen3.8-27b is fine). If you ever stream a model
+    from REASONING_MODELS, raw <think>...</think> text will leak into the
+    yielded deltas; use chat()/chat_json() for those instead.
+    """
+    if model in REASONING_MODELS:
+        raise ValueError(
+            f"chat_stream() doesn't support reasoning models ({model}) — "
+            "their <think> blocks aren't filtered in streaming mode. Use chat() instead."
+        )
+
+    client = get_client()
+    kwargs = _build_kwargs(model, temperature, max_tokens, system, prompt, stream=True)
+    stream = client.chat.completions.create(**kwargs)
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
 
 
 def chat_json(
@@ -87,8 +121,7 @@ def chat_json(
         temperature=temperature,
         max_tokens=max_tokens
     )
-    
-    # Clean out any <think> blocks and parse the remaining text as JSON
+
     clean = _THINK_BLOCK.sub("", raw_response_text).strip()
 
     if _UNCLOSED_THINK.search(clean):
